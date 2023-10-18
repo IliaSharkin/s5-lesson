@@ -1,0 +1,4 @@
+"id","name","bonus_percent","min_payment_threshold"
+0,JUNIOR,0.05000,0.00000
+1,MIDDLE,0.10000,5000.00000
+2,SENIOR,0.15000,15000.00000
