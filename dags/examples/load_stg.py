@@ -120,52 +120,88 @@ def load_ranks_callable(**context):
 
 
 def load_users_callable(**context):
-    sql = """
-    select * from users; 
-    """
-    records = PG_HOOK_SRC.get_records(sql)
-    conn = PG_HOOK_DEST.get_conn()
+    WF_KEY = "bonussystem_users"
+    wf = StgEtlSettingsRepository()
+    dwh_pg_connect = ConnectionBuilder.pg_conn("PG_WAREHOUSE_CONNECTION")
     
-    with conn:
+    with dwh_pg_connect.connection() as conn:
+        wf_setting = wf.get_setting(conn, WF_KEY, schema="stg")
+        LAST_LOADED_TS_KEY = "last_loaded_ts"
+        if not wf_setting:
+            wf_setting = EtlSetting(
+                id=0,
+                workflow_key=WF_KEY,
+                workflow_settings={
+                    LAST_LOADED_TS_KEY: 0
+                }
+            )
+    
+        last_loaded_ts_str = wf_setting.workflow_settings[LAST_LOADED_TS_KEY]
+        last_loaded_ts = int(last_loaded_ts_str)
+        print(f"starting to load from last checkpoint: {last_loaded_ts}")
+    
+    
+        sql = f"""
+        select * from users; 
+        id > {last_loaded_ts}
+        oreder by id
+        """
+        records = PG_HOOK_SRC.get_records(sql)
+    
         with conn.cursor() as curs:
-            sql = """
-            insert into stg.bonussystem_users (id, order_user_id)
-            values (%s, %s);
-            """
-            curs.executemany(sql, records)
-            
+            for record in records:
+                
+                    sql = """
+                    insert into stg.bonussystem_users (id, order_user_id)
+                    values (%s, %s);
+                    """
+                    curs.execute(sql, record)
+                    
+        wf_setting.workflow_settings[LAST_LOADED_TS_KEY] = records[-1][0]
+        wf_setting_json = str(wf_setting.workflow_settings)
+        wf.save_setting(conn, wf_setting.workflow_key, wf_setting_json)
+        
+                
 def load_events_callable(**context):
-    sql = """
-    select last_loaded_id from stg.srv_wf_settings
-    """
-    last_loaded_id = PG_HOOK_DEST.get_records(sql)[0]
-    print(last_loaded_id)
+    WF_KEY = "bonussystem_event"
+    wf = StgEtlSettingsRepository()
+    dwh_pg_connect = ConnectionBuilder.pg_conn("PG_WAREHOUSE_CONNECTION")
     
-    sql = """
-    select * from outbox
-    where id > %s; 
-    """
-    records = PG_HOOK_SRC.get_records(sql, last_loaded_id)
-    print(records)
+    with dwh_pg_connect.connection() as conn:
+        wf_setting = wf.get_setting(conn, WF_KEY, schema="stg")
+        LAST_LOADED_TS_KEY = "last_loaded_ts"
+        if not wf_setting:
+            wf_setting = EtlSetting(
+                id=0,
+                workflow_key=WF_KEY,
+                workflow_settings={
+                    LAST_LOADED_TS_KEY: datetime(2022, 1, 1).isoformat()
+                }
+            )
     
-    conn = PG_HOOK_DEST.get_conn()
-    with conn:
-        with conn.cursor() as curs:
-            sql = """
-            INSERT INTO stg.bonussystem_events (id, event_ts, event_type, event_value)
-            VALUES (%s, %s, %s, %s)
-            """
-            curs.executemany(sql, records)
-            
-            sql_select = """
-            SELECT MAX(id) FROM stg.bonussystem_events;
-            """
-            curs.execute(sql_select)
-            last_loaded_id = curs.fetchone()[0]
-            print(last_loaded_id, "last_loaded_id")
-            
-            sql = f"update stg.srv_wf_settings set last_loaded_id = {last_loaded_id}"
-            PG_HOOK_DEST.run(sql, last_loaded_id)
+        last_loaded_ts_str = wf_setting.workflow_settings[LAST_LOADED_TS_KEY]
+        last_loaded_ts = datetime.fromisoformat(last_loaded_ts_str)
+        print(f"starting to load from last checkpoint: {last_loaded_ts}")
+        
+        
+        sql = f"""
+        select * from outbox
+        where event_ts > '{last_loaded_ts}'
+        order by event_ts; 
+        """
+        records = PG_HOOK_SRC.get_records(sql)
+        
+        for record in records:
+                with conn.cursor() as curs:
+                    sql = """
+                    INSERT INTO stg.bonussystem_events (id, event_ts, event_type, event_value)
+                    VALUES (%s, %s, %s, %s)
+                    """
+                    curs.execute(sql, record)
+                    
+        wf_setting.workflow_settings[LAST_LOADED_TS_KEY] = records[-1][1]
+        wf_setting_json = json2str(wf_setting.workflow_settings)
+        wf.save_setting(conn, wf_setting.workflow_key, wf_setting_json)
             
 def load_user_ordersystem_callable(**context):
     WF_KEY = "bonus_system_users"
@@ -358,7 +394,7 @@ def load_dds_rest_callable(**context):
                 wf.save_setting(conn, wf_setting.workflow_key, wf_setting_json)
                 
                 
-def load_dds_rest_callable(**context):
+def load_dds_rest_callable1(**context):
     WF_KEY = "dds_rest"
     wf = StgEtlSettingsRepository()
     dwh_pg_connect = ConnectionBuilder.pg_conn("PG_WAREHOUSE_CONNECTION")
@@ -428,7 +464,7 @@ def load_dds_timestamp_callable(**context):
         with conn.cursor() as cur:
             sql="""
             SELECT DISTINCT
-                (to_char (((object_value::JSON->>'date')::timestamp)::timestamp  at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))::timestamp as ts
+                (to_char (((object_value::JSON->>'date')::timestamp)::timestamp at time zone 'UTC-3', 'Mon-dd-YYYY,HH24:mi:ss'))::timestamp at time zone 'UTC-3' as ts
             from stg.ordersystem_orders
             where object_value::JSON->>'final_status' in ('CLOSED', 'CANCELLED')
             order by ts DESC;
@@ -456,23 +492,23 @@ def load_dds_timestamp_callable(**context):
         
     
 
-# load_ranks = PythonOperator(
-#     task_id='load_ranks',
-#     python_callable=load_ranks_callable,
-#     dag=dag
-# )
+load_ranks = PythonOperator(
+    task_id='load_ranks',
+    python_callable=load_ranks_callable,
+    dag=dag
+)
 
-# load_users = PythonOperator(
-#     task_id='load_users',
-#     python_callable=load_users_callable,
-#     dag=dag
-# )
+load_users = PythonOperator(
+    task_id='load_users',
+    python_callable=load_users_callable,
+    dag=dag
+)
 
-# load_events = PythonOperator(
-#     task_id='load_events',
-#     python_callable=load_events_callable,
-#     dag=dag
-# )
+load_events = PythonOperator(
+    task_id='load_events',
+    python_callable=load_events_callable,
+    dag=dag
+)
 
 # load_users_order_system = PythonOperator(
 #     task_id='load_user_ordersystem',
@@ -498,16 +534,20 @@ def load_dds_timestamp_callable(**context):
 #     dag=dag
 # )
 
-load_dds_rest = PythonOperator(
-    task_id='load_dds_timestamp',
-    python_callable=load_dds_timestamp_callable,
-    dag=dag
-)
+# load_dds_timestamp = PythonOperator(
+#     task_id='load_dds_timestamp',
+#     python_callable=load_dds_timestamp_callable,
+#     dag=dag
+# )
 
-# [load_ranks, load_users, load_events] 
+[load_ranks, load_users, load_events] 
 # load_users_order_system
 # load_orders_oreder_system
 
 # load_dds_users
 
-load_dds_rest
+# load_dds_timestamp
+
+# load_dds_rest
+
+# load_dds_rest
