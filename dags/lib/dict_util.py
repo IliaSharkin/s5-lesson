@@ -15,7 +15,7 @@ def str2json(str: str) -> Dict:
 
 def to_dict(obj, classkey=None):
     if isinstance(obj, datetime):
-        return obj.strftime("%Y-%m-%d %H:%M:%S")
+        return obj.strftime("%Y-%m-%d %H:%M:%S.%f")
     elif isinstance(obj, ObjectId):
         return str(obj)
     if isinstance(obj, dict):
